@@ -15,21 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import atr.forms as forms
+import atr.form as form
 
 
-class DeleteFileForm(forms.Typed):
-    """Form for deleting a file."""
-
-    file_path = forms.string("File path")
-    submit = forms.submit("Delete file")
+class DeleteFileForm(form.Form):
+    file_path: str = form.label("File path", widget=form.Widget.HIDDEN)
 
 
-class DeleteForm(forms.Typed):
-    """Form for deleting a candidate draft."""
-
-    release_name = forms.hidden()
-    project_name = forms.hidden()
-    version_name = forms.hidden()
-    confirm_delete = forms.string("Confirmation", validators=forms.constant("DELETE"))
-    submit = forms.submit("Delete candidate draft")
+class HashGen(form.Form):
+    hash_type: str = form.label("Hash type", widget=form.Widget.HIDDEN)

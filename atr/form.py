@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 DISCRIMINATOR_NAME: Final[str] = "variant"
 DISCRIMINATOR: Final[Any] = schema.discriminator(DISCRIMINATOR_NAME)
 
-_CONFIRM_PATTERN = re.compile(r"^[A-Za-z0-9 .,!?-]+$")
+_CONFIRM_PATTERN = re.compile(r"^[A-Za-z0-9 _.,!?-]+$")
 
 
 class Form(schema.Form):

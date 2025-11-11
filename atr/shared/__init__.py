@@ -21,10 +21,12 @@ import wtforms
 
 import atr.db as db
 import atr.db.interaction as interaction
-import atr.forms as forms
+import atr.form as form
+import atr.get as get
 import atr.htm as htm
 import atr.models.results as results
 import atr.models.sql as sql
+import atr.post as post
 import atr.shared.announce as announce
 import atr.shared.distribution as distribution
 import atr.shared.draft as draft
@@ -82,7 +84,7 @@ async def check(
     session: web.Committer | None,
     release: sql.Release,
     task_mid: str | None = None,
-    form: htm.Element | None = None,
+    vote_form: htm.Element | None = None,
     resolve_form: wtforms.Form | None = None,
     archive_url: str | None = None,
     vote_task: sql.Task | None = None,
@@ -126,11 +128,39 @@ async def check(
             revision_editor = None
             revision_timestamp = None
 
-    delete_draft_form = await draft.DeleteForm.create_form(
-        data={"release_name": release.name, "project_name": release.project.name, "version_name": release.version}
+    delete_form = form.render(
+        model_cls=form.Empty,
+        action=util.as_url(get.compose.selected, project_name=release.project.name, version_name=release.version),
+        submit_label="Delete this draft",
+        submit_classes="btn btn-danger",
+        empty=True,
+        confirm="Are you sure you want to delete this draft? This cannot be undone.",
     )
-    delete_file_form = await draft.DeleteFileForm.create_form()
-    empty_form = await forms.Empty.create_form()
+
+    delete_file_forms: dict[str, htm.Element] = {}
+    for path in paths:
+        delete_file_forms[str(path)] = form.render(
+            model_cls=draft.DeleteFileForm,
+            action=util.as_url(post.draft.delete_file, project_name=release.project.name, version_name=release.version),
+            form_classes=".d-inline-block.m-0",
+            submit_classes="btn-sm btn-outline-danger",
+            submit_label="Delete",
+            empty=True,
+            defaults={"file_path": str(path)},
+            confirm=(
+                f"Are you sure you want to delete {path}? "
+                f"This will also delete any associated metadata files. "
+                f"This cannot be undone."
+            ),
+        )
+
+    empty_form = form.render(
+        model_cls=form.Empty,
+        action=util.as_url(post.draft.fresh, project_name=release.project.name, version_name=release.version),
+        submit_label="Restart all checks",
+        submit_classes="btn btn-primary",
+    )
+
     vote_task_warnings = _warnings_from_vote_result(vote_task)
     has_files = await util.has_files(release)
 
@@ -149,8 +179,8 @@ async def check(
         revision_time=revision_timestamp,
         revision_number=revision_number,
         ongoing_tasks_count=ongoing_tasks_count,
-        delete_form=delete_draft_form,
-        delete_file_form=delete_file_form,
+        delete_form=delete_form,
+        delete_file_forms=delete_file_forms,
         asf_id=asf_id,
         server_domain=server_domain,
         server_host=server_host,
@@ -158,7 +188,7 @@ async def check(
         format_datetime=util.format_datetime,
         models=sql,
         task_mid=task_mid,
-        form=form,
+        vote_form=vote_form,
         vote_task=vote_task,
         archive_url=archive_url,
         vote_task_warnings=vote_task_warnings,

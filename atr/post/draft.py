@@ -27,7 +27,7 @@ import quart
 
 import atr.blueprints.post as post
 import atr.construct as construct
-import atr.forms as forms
+import atr.form as form
 import atr.get as get
 import atr.log as log
 import atr.models.sql as sql
@@ -37,37 +37,16 @@ import atr.util as util
 import atr.web as web
 
 
-class VotePreviewForm(forms.Typed):
-    body = forms.textarea("Body")
-    # TODO: Validate the vote duration again?
-    # Probably not necessary in a preview
-    # Note that tasks/vote.py does not use this form
-    vote_duration = forms.integer("Vote duration")
+class VotePreviewForm(form.Form):
+    body: str = form.label("Body", widget=form.Widget.TEXTAREA)
+    # Note: this does not provide any vote duration validation; this simply displays a preview to the user
+    vote_duration: form.Int = form.label("Vote duration")
 
 
-@post.committer("/draft/delete")
-async def delete(session: web.Committer) -> web.WerkzeugResponse:
+@post.committer("/compose/<project_name>/<version_name>")
+@post.empty()
+async def delete(session: web.Committer, project_name: str, version_name: str) -> web.WerkzeugResponse:
     """Delete a candidate draft and all its associated files."""
-    import atr.get as get
-
-    form = await shared.draft.DeleteForm.create_form(data=await quart.request.form)
-    if not await form.validate_on_submit():
-        for _field, errors in form.errors.items():
-            for error in errors:
-                await quart.flash(f"{error}", "error")
-        return await session.redirect(get.root.index)
-
-    release_name = form.release_name.data
-    if not release_name:
-        return await session.redirect(get.root.index, error="Missing required parameters")
-
-    project_name = form.project_name.data
-    if not project_name:
-        return await session.redirect(get.root.index, error="Missing required parameters")
-
-    version_name = form.version_name.data
-    if not version_name:
-        return await session.redirect(get.root.index, error="Missing required parameters")
 
     await session.check_access(project_name)
 
@@ -92,19 +71,14 @@ async def delete(session: web.Committer) -> web.WerkzeugResponse:
 
 
 @post.committer("/draft/delete-file/<project_name>/<version_name>")
-async def delete_file(session: web.Committer, project_name: str, version_name: str) -> web.WerkzeugResponse:
+@post.form(shared.draft.DeleteFileForm)
+async def delete_file(
+    session: web.Committer, delete_file_form: shared.draft.DeleteFileForm, project_name: str, version_name: str
+) -> web.WerkzeugResponse:
     """Delete a specific file from the release candidate, creating a new revision."""
     await session.check_access(project_name)
 
-    form = await shared.draft.DeleteFileForm.create_form(data=await quart.request.form)
-    if not await form.validate_on_submit():
-        error_summary = []
-        for key, value in form.errors.items():
-            error_summary.append(f"{key}: {value}")
-        await quart.flash("; ".join(error_summary), "error")
-        return await session.redirect(get.compose.selected, project_name=project_name, version_name=version_name)
-
-    rel_path_to_delete = pathlib.Path(str(form.file_path.data))
+    rel_path_to_delete = pathlib.Path(str(delete_file_form.file_path))
 
     try:
         async with storage.write(session) as write:
@@ -127,12 +101,12 @@ async def delete_file(session: web.Committer, project_name: str, version_name: s
 
 
 @post.committer("/draft/fresh/<project_name>/<version_name>")
+@post.empty()
 async def fresh(session: web.Committer, project_name: str, version_name: str) -> web.WerkzeugResponse:
     """Restart all checks for a whole release candidate draft."""
     # Admin only button, but it's okay if users find and use this manually
     await session.check_access(project_name)
 
-    await util.validate_empty_form()
     # Restart checks by creating a new identical draft revision
     # This doesn't make sense unless the checks themselves have been updated
     # Therefore we only show the button for this to admins
@@ -153,15 +127,14 @@ async def fresh(session: web.Committer, project_name: str, version_name: str) ->
 
 
 @post.committer("/draft/hashgen/<project_name>/<version_name>/<path:file_path>")
-async def hashgen(session: web.Committer, project_name: str, version_name: str, file_path: str) -> web.WerkzeugResponse:
+@post.form(shared.draft.HashGen)
+async def hashgen(
+    session: web.Committer, hashgen_form: shared.draft.HashGen, project_name: str, version_name: str, file_path: str
+) -> web.WerkzeugResponse:
     """Generate an sha256 or sha512 hash file for a candidate draft file, creating a new revision."""
     await session.check_access(project_name)
 
-    # Get the hash type from the form data
-    # TODO: This is not truly empty, so make a form object for this
-    await util.validate_empty_form()
-    form = await quart.request.form
-    hash_type = form.get("hash_type")
+    hash_type = hashgen_form.hash_type
     if hash_type not in {"sha256", "sha512"}:
         raise base.ASFQuartException(f"Invalid hash type '{hash_type}'. Supported types: sha256, sha512", errorcode=400)
 
@@ -186,11 +159,11 @@ async def hashgen(session: web.Committer, project_name: str, version_name: str, 
 
 
 @post.committer("/draft/sbomgen/<project_name>/<version_name>/<path:file_path>")
+@post.empty()
 async def sbomgen(session: web.Committer, project_name: str, version_name: str, file_path: str) -> web.WerkzeugResponse:
     """Generate a CycloneDX SBOM file for a candidate draft file, creating a new revision."""
     await session.check_access(project_name)
 
-    await util.validate_empty_form()
     rel_path = pathlib.Path(file_path)
 
     # Check that the file is a .tar.gz archive before creating a revision
@@ -243,25 +216,21 @@ async def sbomgen(session: web.Committer, project_name: str, version_name: str, 
 
 
 @post.committer("/draft/vote/preview/<project_name>/<version_name>")
+@post.form(VotePreviewForm)
 async def vote_preview(
-    session: web.Committer, project_name: str, version_name: str
+    session: web.Committer, vote_preview_form: VotePreviewForm, project_name: str, version_name: str
 ) -> web.QuartResponse | web.WerkzeugResponse | str:
     """Show the vote email preview for a release."""
-    import atr.get as get
-
-    form = await VotePreviewForm.create_form(data=await quart.request.form)
-    if not await form.validate_on_submit():
-        return await session.redirect(get.root.index, error="Invalid form data")
 
     release = await session.release(project_name, version_name)
     if release.committee is None:
         raise web.FlashError("Release has no associated committee")
 
-    form_body: str = util.unwrap(form.body.data)
+    form_body: str = vote_preview_form.body
     asfuid = session.uid
     project_name = release.project.name
     version_name = release.version
-    vote_duration: int = util.unwrap(form.vote_duration.data)
+    vote_duration: int = vote_preview_form.vote_duration
     vote_end = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=vote_duration)
     vote_end_str = vote_end.strftime("%Y-%m-%d %H:%M:%S UTC")
 

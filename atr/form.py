@@ -20,6 +20,7 @@ from __future__ import annotations
 import enum
 import json
 import pathlib
+import re
 import types
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, TypeAliasType, get_args, get_origin
 
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
 
 DISCRIMINATOR_NAME: Final[str] = "variant"
 DISCRIMINATOR: Final[Any] = schema.discriminator(DISCRIMINATOR_NAME)
+
+_CONFIRM_PATTERN = re.compile(r"^[A-Za-z0-9 .,!?-]+$")
 
 
 class Form(schema.Form):
@@ -257,6 +260,7 @@ def render(  # noqa: C901
     border: bool = False,
     wider_widgets: bool = False,
     skip: list[str] | None = None,
+    confirm: str | None = None,
 ) -> htm.Element:
     if action is None:
         action = quart.request.path
@@ -320,7 +324,17 @@ def render(  # noqa: C901
         unused = ", ".join(custom.keys())
         raise ValueError(f"Custom widgets provided but not used: {unused}")
 
-    return htm.form(form_classes, action=action, method="post", enctype="multipart/form-data")[form_children]
+    form_attrs: dict[str, str] = {
+        "action": action,
+        "method": "post",
+        "enctype": "multipart/form-data",
+    }
+    if confirm:
+        if not _CONFIRM_PATTERN.match(confirm):
+            raise ValueError(f"Invalid characters in confirm message: {confirm!r}")
+        form_attrs["onsubmit"] = f"return confirm('{confirm}');"
+
+    return htm.form(form_classes, **form_attrs)[form_children]
 
 
 def render_block(block: htm.Block, *args, **kwargs) -> None:
@@ -731,7 +745,7 @@ def _render_field_value(
     return field_value
 
 
-def _render_row(
+def _render_row(  # noqa: C901
     field_info: pydantic.fields.FieldInfo,
     field_name: str,
     flash_error_data: dict[str, Any],
@@ -761,7 +775,10 @@ def _render_row(
     if widget_type == Widget.HIDDEN:
         attrs = {"type": "hidden", "name": field_name, "id": field_name}
         if field_value is not None:
-            attrs["value"] = str(field_value)
+            if isinstance(field_value, enum.Enum):
+                attrs["value"] = field_value.value
+            else:
+                attrs["value"] = str(field_value)
         return htpy.input(**attrs), None
 
     label_text = field_info.description or field_name.replace("_", " ").title()

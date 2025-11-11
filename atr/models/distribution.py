@@ -87,21 +87,6 @@ class PyPIResponse(schema.Lax):
     info: PyPIInfo = pydantic.Field(default_factory=PyPIInfo)
 
 
-class DeleteData(schema.Lax):
-    release_name: str
-    platform: sql.DistributionPlatform
-    owner_namespace: str
-    package: str
-    version: str
-
-    @pydantic.field_validator("platform", mode="before")
-    @classmethod
-    def coerce_platform(cls, v: object) -> object:
-        if isinstance(v, str):
-            return sql.DistributionPlatform[v]
-        return v
-
-
 # Lax to ignore csrf_token and submit
 # WTForms types platform as Any, which is insufficient
 # And this way we also get nice JSON from the Pydantic model dump

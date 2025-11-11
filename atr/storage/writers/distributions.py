@@ -25,6 +25,7 @@ import aiohttp
 import sqlalchemy.exc as exc
 
 import atr.db as db
+import atr.log as log
 import atr.models.basic as basic
 import atr.models.distribution as distribution
 import atr.models.sql as sql
@@ -161,8 +162,9 @@ class CommitteeMember(CommitteeParticipant):
         match api_oc:
             case outcome.Result(result):
                 pass
-            case outcome.Error():
-                raise storage.AccessError("Failed to get API response from distribution platform")
+            case outcome.Error(error):
+                log.error(f"Failed to get API response from {api_url}: {error}")
+                raise storage.AccessError(f"Failed to get API response from distribution platform: {error}")
         upload_date = self.__distribution_upload_date(dd.platform, result, dd.version)
         if upload_date is None:
             raise storage.AccessError("Failed to get upload date from distribution platform")

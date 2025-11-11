@@ -17,74 +17,105 @@
 
 from __future__ import annotations
 
-import dataclasses
-import json
+import enum
 from typing import Literal
 
-import quart
+import pydantic
 
 import atr.db as db
-import atr.forms as forms
+import atr.form as form
 import atr.get as get
 import atr.htm as htm
 import atr.models.distribution as distribution
 import atr.models.sql as sql
-import atr.storage as storage
-import atr.template as template
 import atr.util as util
 
 type Phase = Literal["COMPOSE", "VOTE", "FINISH"]
 
 
-class DeleteForm(forms.Typed):
-    release_name = forms.hidden()
-    platform = forms.hidden()
-    owner_namespace = forms.hidden()
-    package = forms.hidden()
-    version = forms.hidden()
-    submit = forms.submit("Delete")
+class DistributionPlatform(enum.Enum):
+    """Wrapper enum for distribution platforms."""
+
+    ARTIFACT_HUB = "Artifact Hub"
+    DOCKER_HUB = "Docker Hub"
+    MAVEN = "Maven Central"
+    NPM = "npm"
+    NPM_SCOPED = "npm (scoped)"
+    PYPI = "PyPI"
+
+    def to_sql(self) -> sql.DistributionPlatform:
+        """Convert to SQL enum."""
+        match self:
+            case DistributionPlatform.ARTIFACT_HUB:
+                return sql.DistributionPlatform.ARTIFACT_HUB
+            case DistributionPlatform.DOCKER_HUB:
+                return sql.DistributionPlatform.DOCKER_HUB
+            case DistributionPlatform.MAVEN:
+                return sql.DistributionPlatform.MAVEN
+            case DistributionPlatform.NPM:
+                return sql.DistributionPlatform.NPM
+            case DistributionPlatform.NPM_SCOPED:
+                return sql.DistributionPlatform.NPM_SCOPED
+            case DistributionPlatform.PYPI:
+                return sql.DistributionPlatform.PYPI
+
+    @classmethod
+    def from_sql(cls, platform: sql.DistributionPlatform) -> DistributionPlatform:
+        """Convert from SQL enum."""
+        match platform:
+            case sql.DistributionPlatform.ARTIFACT_HUB:
+                return cls.ARTIFACT_HUB
+            case sql.DistributionPlatform.DOCKER_HUB:
+                return cls.DOCKER_HUB
+            case sql.DistributionPlatform.MAVEN:
+                return cls.MAVEN
+            case sql.DistributionPlatform.NPM:
+                return cls.NPM
+            case sql.DistributionPlatform.NPM_SCOPED:
+                return cls.NPM_SCOPED
+            case sql.DistributionPlatform.PYPI:
+                return cls.PYPI
 
 
-class DistributeForm(forms.Typed):
-    platform = forms.select("Platform", choices=sql.DistributionPlatform)
-    owner_namespace = forms.optional(
+class DeleteForm(form.Form):
+    release_name: str = form.label("Release name", widget=form.Widget.HIDDEN)
+    platform: form.Enum[DistributionPlatform] = form.label("Platform", widget=form.Widget.HIDDEN)
+    owner_namespace: str = form.label("Owner namespace", widget=form.Widget.HIDDEN)
+    package: str = form.label("Package", widget=form.Widget.HIDDEN)
+    version: str = form.label("Version", widget=form.Widget.HIDDEN)
+
+
+class DistributeForm(form.Form):
+    platform: form.Enum[DistributionPlatform] = form.label("Platform", widget=form.Widget.SELECT)
+    owner_namespace: str = form.label(
         "Owner or Namespace",
-        placeholder="E.g. com.example or scope or library",
-        description="Who owns or names the package (Maven groupId, npm @scope, "
-        "Docker namespace, GitHub owner, ArtifactHub repo). Leave blank if not used.",
+        "Who owns or names the package (Maven groupId, npm @scope, Docker namespace, "
+        "GitHub owner, ArtifactHub repo). Leave blank if not used.",
     )
-    package = forms.string("Package", placeholder="E.g. artifactId or package-name")
-    version = forms.string("Version", placeholder="E.g. 1.2.3, without a leading v")
-    details = forms.checkbox("Include details", description="Include the details of the distribution in the response")
-    submit = forms.submit("Record distribution")
+    package: str = form.label("Package")
+    version: str = form.label("Version")
+    details: form.Bool = form.label(
+        "Include details",
+        "Include the details of the distribution in the response",
+    )
 
-    async def validate(self, extra_validators: dict | None = None) -> bool:
-        if not await super().validate(extra_validators):
-            return False
-        if not self.platform.data:
-            return False
-        default_owner_namespace = self.platform.data.value.default_owner_namespace
-        requires_owner_namespace = self.platform.data.value.requires_owner_namespace
-        owner_namespace = self.owner_namespace.data
-        # TODO: We should disable the owner_namespace field if it's not required
-        # But that would be a lot of complexity
-        # And this validation, which we need to keep, is complex enough
-        if default_owner_namespace and (not owner_namespace):
-            self.owner_namespace.data = default_owner_namespace
-        if requires_owner_namespace and (not owner_namespace):
-            msg = f'Platform "{self.platform.data.name}" requires an owner or namespace.'
-            return forms.error(self.owner_namespace, msg)
-        if (not requires_owner_namespace) and (not default_owner_namespace) and owner_namespace:
-            msg = f'Platform "{self.platform.data.name}" does not require an owner or namespace.'
-            return forms.error(self.owner_namespace, msg)
-        return True
+    @pydantic.model_validator(mode="after")
+    def validate_owner_namespace(self) -> DistributeForm:
+        platform_name: str = self.platform.name  # type: ignore[attr-defined]
+        sql_platform = self.platform.to_sql()  # type: ignore[attr-defined]
+        default_owner_namespace = sql_platform.value.default_owner_namespace
+        requires_owner_namespace = sql_platform.value.requires_owner_namespace
 
+        if default_owner_namespace and (not self.owner_namespace):
+            self.owner_namespace = default_owner_namespace
 
-@dataclasses.dataclass
-class FormProjectVersion:
-    form: DistributeForm
-    project: str
-    version: str
+        if requires_owner_namespace and (not self.owner_namespace):
+            raise ValueError(f'Platform "{platform_name}" requires an owner or namespace.')
+
+        if (not requires_owner_namespace) and (not default_owner_namespace) and self.owner_namespace:
+            raise ValueError(f'Platform "{platform_name}" does not require an owner or namespace.')
+
+        return self
 
 
 # TODO: Move this to an appropriate module
@@ -153,121 +184,6 @@ def html_tr(label: str, value: str) -> htm.Element:
 
 def html_tr_a(label: str, value: str | None) -> htm.Element:
     return htm.tr[htm.th[label], htm.td[htm.a(href=value)[value] if value else "-"]]
-
-
-# This function is used for COMPOSE (stage) and FINISH (record)
-# It's also used whenever there is an error
-async def record_form_page(
-    fpv: FormProjectVersion, *, extra_content: htm.Element | None = None, staging: bool = False
-) -> str:
-    await release_validated(fpv.project, fpv.version, staging=staging)
-
-    # Render the explanation and form
-    block = htm.Block()
-    html_nav_phase(block, fpv.project, fpv.version, staging)
-
-    # Record a manual distribution
-    title_and_heading = f"Record a {'staging' if staging else 'manual'} distribution"
-    block.h1[title_and_heading]
-    if extra_content:
-        block.append(extra_content)
-    block.p[
-        "Record a distribution of ",
-        htm.strong[f"{fpv.project}-{fpv.version}"],
-        " using the form below.",
-    ]
-    block.p[
-        "You can also ",
-        htm.a(href=util.as_url(get.distribution.list_get, project=fpv.project, version=fpv.version))[
-            "view the distribution list"
-        ],
-        ".",
-    ]
-    block.append(forms.render_columns(fpv.form, action=quart.request.path, descriptions=True))
-
-    # Render the page
-    return await template.blank(title_and_heading, content=block.collect())
-
-
-async def record_form_process_page(fpv: FormProjectVersion, /, staging: bool = False) -> str:
-    dd = distribution.Data.model_validate(fpv.form.data)
-    release, committee = await release_validated_and_committee(
-        fpv.project,
-        fpv.version,
-        staging=staging,
-    )
-
-    # In case of error, show an alert
-    async def _alert(message: str) -> str:
-        div = htm.Block(htm.div(".alert.alert-danger"))
-        div.p[message]
-        collected = div.collect()
-        return await record_form_page(fpv, extra_content=collected, staging=staging)
-
-    async with storage.write_as_committee_member(committee_name=committee.name) as w:
-        try:
-            dist, added, metadata = await w.distributions.record_from_data(
-                release=release,
-                staging=staging,
-                dd=dd,
-            )
-        except storage.AccessError as e:
-            return await _alert(str(e))
-
-    block = htm.Block()
-
-    # Distribution submitted
-    block.h1["Distribution recorded"]
-
-    ## Record
-    block.h2["Record"]
-    if added:
-        block.p["The distribution was recorded successfully."]
-    else:
-        block.p["The distribution was already recorded."]
-    block.table(".table.table-striped.table-bordered")[
-        htm.tbody[
-            html_tr("Release name", dist.release_name),
-            html_tr("Platform", dist.platform.name),
-            html_tr("Owner or Namespace", dist.owner_namespace or "-"),
-            html_tr("Package", dist.package),
-            html_tr("Version", dist.version),
-            html_tr("Staging", "Yes" if dist.staging else "No"),
-            html_tr("Upload date", str(dist.upload_date)),
-            html_tr_a("API URL", dist.api_url),
-            html_tr_a("Web URL", dist.web_url),
-        ]
-    ]
-    block.p[
-        htm.a(href=util.as_url(get.distribution.list_get, project=fpv.project, version=fpv.version))[
-            "Back to distribution list"
-        ],
-    ]
-
-    if dd.details:
-        ## Details
-        block.h2["Details"]
-
-        ### Submitted values
-        block.h3["Submitted values"]
-        html_submitted_values_table(block, dd)
-
-        ### As JSON
-        block.h3["As JSON"]
-        block.pre(".mb-3")[dd.model_dump_json(indent=2)]
-
-        ### API URL
-        block.h3["API URL"]
-        block.pre(".mb-3")[metadata.api_url]
-
-        ### API response
-        block.h3["API response"]
-        block.details[
-            htm.summary["Show full API response"],
-            htm.pre(".atr-pre-wrap.mb-3")[json.dumps(metadata.result, indent=2)],
-        ]
-
-    return await template.blank("Distribution submitted", content=block.collect())
 
 
 async def release_validated_and_committee(

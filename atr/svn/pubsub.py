@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import asyncio
 import os
 import pathlib
 import urllib.parse
@@ -54,24 +55,49 @@ class SVNListener:
         """Run forever, processing PubSub payloads as they arrive."""
         # TODO: Add reconnection logic here?
         # Or does asfpy.pubsub.listen() already do this?
-        log.info("SVNListener.start() called")
-        async for payload in asfpy.pubsub.listen(
-            # TODO: Upstream this change to BAT
-            urllib.parse.urljoin(self.url, self.topics),
-            username=self.username,
-            password=self.password,
-        ):
-            if (payload is None) or ("stillalive" in payload):
-                continue
+        if not self.url:
+            log.error("PubSub URL is not configured")
+            log.warning("SVNListener disabled: no URL provided")
+            return
 
-            pubsub_path = str(payload.get("pubsub_path", ""))
-            if not pubsub_path.startswith(_WATCHED_PREFIXES):
-                # Ignore commits outside dist/dev or dist/release
-                continue
+        if (not self.username) or (not self.password):
+            log.error("PubSub credentials not configured")
+            log.warning("SVNListener disabled: missing credentials")
+            return
 
-            log.debug("PubSub payload: %s", payload)
-            await self._process_payload(payload)
-        log.info("SVNListener.start() finished")
+        if not self.url.startswith(("http://", "https://")):
+            log.error(
+                "Invalid PubSub URL: %r. Expected full URL like 'https://pubsub.apache.org:2069'",
+                self.url,
+            )
+            log.warning("SVNListener disabled due to invalid URL")
+            return
+
+        full_url = urllib.parse.urljoin(self.url, self.topics)
+        log.info(f"SVNListener starting with URL: {full_url}")
+
+        try:
+            async for payload in asfpy.pubsub.listen(
+                full_url,
+                username=self.username,
+                password=self.password,
+            ):
+                if (payload is None) or ("stillalive" in payload):
+                    continue
+
+                pubsub_path = str(payload.get("pubsub_path", ""))
+                if not pubsub_path.startswith(_WATCHED_PREFIXES):
+                    # Ignore commits outside dist/dev or dist/release
+                    continue
+                log.debug("PubSub payload: %s", payload)
+                await self._process_payload(payload)
+        except asyncio.CancelledError:
+            log.info("SVNListener cancelled, shutting down gracefully")
+            raise
+        except Exception as exc:
+            log.error("SVNListener error: %s", exc, exc_info=True)
+        finally:
+            log.info("SVNListener.start() finished")
 
     async def _process_payload(self, payload: dict) -> None:
         """

@@ -22,6 +22,7 @@ import contextlib
 import datetime
 import os
 import queue
+import urllib.parse
 from collections.abc import Iterable
 from typing import Any
 
@@ -173,8 +174,10 @@ def app_setup_lifecycle(app: base.QuartApp) -> None:
         pubsub_url = conf.PUBSUB_URL
         pubsub_user = conf.PUBSUB_USER
         pubsub_password = conf.PUBSUB_PASSWORD
+        parsed_pubsub_url = urllib.parse.urlparse(pubsub_url) if pubsub_url else None
+        valid_pubsub_url = bool(parsed_pubsub_url and parsed_pubsub_url.scheme and parsed_pubsub_url.netloc)
 
-        if pubsub_url and pubsub_user and pubsub_password:
+        if valid_pubsub_url and pubsub_url and pubsub_user and pubsub_password:
             log.info("Starting PubSub SVN listener")
             listener = pubsub.SVNListener(
                 working_copy_root=conf.SVN_STORAGE_DIR,
@@ -188,7 +191,7 @@ def app_setup_lifecycle(app: base.QuartApp) -> None:
         else:
             log.info(
                 "PubSub SVN listener not started: pubsub_url=%s pubsub_user=%s pubsub_password=%s",
-                bool(pubsub_url),
+                bool(valid_pubsub_url),
                 bool(pubsub_user),
                 # Essential to use bool(...) here to avoid logging the password
                 bool(pubsub_password),

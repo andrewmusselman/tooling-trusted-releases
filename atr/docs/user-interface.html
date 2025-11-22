@@ -30,24 +30,109 @@
 <p>Templates are loaded into memory at server startup by <a href="/ref/atr/preload.py:setup_template_preloading"><code>preload.setup_template_preloading</code></a>. This means that changing a template requires restarting the server in development, which can be configured to happen automatically, but it also means that rendering is fast because we never do a disk read during request handling. The preloading scans <a href="/ref/atr/templates/"><code>templates/</code></a> recursively and caches every file.</p>
 <p>Template rendering happens in a thread pool to avoid blocking the async event loop. The function <a href="/ref/atr/template.py:_render_in_thread"><code>_render_in_thread</code></a> uses <code>asyncio.to_thread</code> to execute Jinja2's synchronous <code>render</code> method.</p>
 <h2 id="forms">Forms</h2>
-<p>HTML forms in ATR are handled by <a href="https://wtforms.readthedocs.io/">WTForms</a>, accessed through our <a href="/ref/atr/forms.py"><code>forms</code></a> module. Each form is a class that inherits from <a href="/ref/atr/forms.py:Typed"><code>forms.Typed</code></a>, which itself inherits from <code>QuartForm</code> in <a href="https://quart-wtf.readthedocs.io/">Quart-WTF</a>. Form fields are class attributes created using helper functions from the <code>forms</code> module.</p>
-<p>Here is a typical form definition from <a href="/ref/atr/shared/keys.py:AddOpenPGPKeyForm"><code>shared/keys.py</code></a>:</p>
-<pre><code class="language-python">class AddOpenPGPKeyForm(forms.Typed):
-    public_key = forms.textarea(
+<p>HTML forms in ATR are handled by <a href="https://docs.pydantic.dev/latest/">Pydantic</a> models accessed through our <a href="/ref/atr/form.py"><code>form</code></a> module. Each form is a class that inherits from <a href="/ref/atr/form.py:Form"><code>form.Form</code></a>, which itself inherits from <code>pydantic.BaseModel</code>. Form fields are defined as class attributes using Pydantic type annotations, with the <a href="/ref/atr/form.py:label"><code>form.label</code></a> function providing field metadata like labels and documentation.</p>
+<p>Here is a typical form definition from <a href="/ref/atr/shared/keys.py"><code>shared/keys.py</code></a>:</p>
+<pre><code class="language-python">class AddOpenPGPKeyForm(form.Form):
+    public_key: str = form.label(
         "Public OpenPGP key",
-        placeholder="Paste your ASCII-armored public OpenPGP key here...",
-        description="Your public key should be in ASCII-armored format, starting with"
-        ' "-----BEGIN PGP PUBLIC KEY BLOCK-----"',
+        'Your public key should be in ASCII-armored format, starting with "-----BEGIN PGP PUBLIC KEY BLOCK-----"',
+        widget=form.Widget.TEXTAREA,
     )
-    selected_committees = forms.checkboxes(
+    selected_committees: form.StrList = form.label(
         "Associate key with committees",
-        description="Select the committees with which to associate your key.",
+        "Select the committees with which to associate your key.",
     )
-    submit = forms.submit("Add OpenPGP key")
+
+    @pydantic.model_validator(mode="after")
+    def validate_at_least_one_committee(self) -&gt; "AddOpenPGPKeyForm":
+        if not self.selected_committees:
+            raise ValueError("You must select at least one committee to associate with this key")
+        return self
 </code></pre>
-<p>The helper functions like <a href="/ref/atr/forms.py:textarea"><code>forms.textarea</code></a>, <a href="/ref/atr/forms.py:checkboxes"><code>forms.checkboxes</code></a>, and <a href="/ref/atr/forms.py:submit"><code>forms.submit</code></a> create WTForms field objects with appropriate validators. The first argument is always the label text. Optional fields take <code>optional=True</code>, and you can provide placeholders, descriptions, and other field-specific options. If you do not pass <code>optional=True</code>, the field is required by default. The <a href="/ref/atr/forms.py:string"><code>forms.string</code></a> function adds <code>REQUIRED</code> to the validators, while <a href="/ref/atr/forms.py:optional"><code>forms.optional</code></a> adds <code>OPTIONAL</code>.</p>
-<p>To use a form in a route, create it with <code>await FormClass.create_form()</code>. For POST requests, pass <code>data=await quart.request.form</code> to populate it with the submitted data. Then validate with <code>await form.validate_on_submit()</code>. If validation passes, you extract data from <code>form.field_name.data</code> and proceed. If validation fails, re-render the template with the form object, which will then display error messages.</p>
-<p>The <a href="/ref/atr/forms.py"><code>forms</code></a> module also provides rendering functions that generate Bootstrap-styled HTML. The function <a href="/ref/atr/forms.py:render_columns"><code>forms.render_columns</code></a> creates a two-column layout with labels on the left and inputs on the right. The function <a href="/ref/atr/forms.py:render_simple"><code>forms.render_simple</code></a> creates a simpler vertical layout. The function <a href="/ref/atr/forms.py:render_table"><code>forms.render_table</code></a> puts the form inside a table. All three functions return htpy elements, which you can embed in templates or return directly from route handlers.</p>
+<h3 id="field-types-and-labels">Field Types and Labels</h3>
+<p>The <a href="/ref/atr/form.py:label"><code>form.label</code></a> function is used to add metadata to Pydantic fields. The first argument is the label text, the second (optional) argument is documentation text that appears below the field, and you can pass additional keyword arguments like <code>widget=form.Widget.TEXTAREA</code> to specify the HTML widget type.</p>
+<p>Fields use Pydantic type annotations to define their data type:</p>
+<ul>
+<li><code>str</code> - text input (default widget: <code>Widget.TEXT</code>)</li>
+<li><code>form.Email</code> - email input with validation</li>
+<li><code>form.URL</code> - URL input with validation</li>
+<li><code>form.Bool</code> - checkbox</li>
+<li><code>form.Int</code> - number input</li>
+<li><code>form.StrList</code> - multiple checkboxes that collect strings</li>
+<li><code>form.File</code> - single file upload</li>
+<li><code>form.FileList</code> - multiple file upload</li>
+<li><code>form.Enum[EnumType]</code> - dropdown select from enum values</li>
+<li><code>form.Set[EnumType]</code> - multiple checkboxes from enum values</li>
+</ul>
+<p>Empty values for fields are allowed by default in most cases, but URL is an exception.</p>
+<p>The <code>widget</code> parameter in <a href="/ref/atr/form.py:label"><code>form.label</code></a> lets you override the default widget for a field type. Available widgets include: <code>TEXTAREA</code>, <code>CHECKBOXES</code>, <code>SELECT</code>, <code>RADIO</code>, <code>HIDDEN</code>, and others from the <code>form.Widget</code> enum. Common reasons to override:</p>
+<ul>
+<li>HIDDEN: for values passed from the route, not entered by the user</li>
+<li>TEXTAREA: for multi-line text input</li>
+<li>RADIO: for mutually exclusive choices</li>
+<li>CUSTOM: for fully custom rendering</li>
+</ul>
+<p>From <a href="/ref/atr/shared/projects.py:AddProjectForm"><code>projects.AddProjectForm</code></a>:</p>
+<pre><code class="language-python">committee_name: str = form.label("Committee name", widget=form.Widget.HIDDEN)
+</code></pre>
+<p>From <a href="/ref/atr/shared/resolve.py:SubmitForm"><code>resolve.SubmitForm</code></a>:</p>
+<pre><code class="language-python">email_body: str = form.label("Email body", widget=form.Widget.TEXTAREA)
+</code></pre>
+<p>From <a href="/ref/atr/shared/resolve.py:SubmitForm"><code>resolve.SubmitForm</code></a>:</p>
+<pre><code class="language-python">vote_result: Literal["Passed", "Failed"] = form.label("Vote result", widget=form.Widget.RADIO)
+</code></pre>
+<p>From <a href="/ref/atr/shared/vote.py:CastVoteForm"><code>vote.CastVoteForm</code></a>:</p>
+<pre><code class="language-python">decision: Literal["+1", "0", "-1"] = form.label("Your vote", widget=form.Widget.CUSTOM)
+</code></pre>
+<h3 id="using-forms-in-routes">Using Forms in Routes</h3>
+<p>To use a form in a route, use the <a href="/ref/atr/blueprints/post.py:committer"><code>@post.committer()</code></a> decorator to get the session and auth the user, and the <a href="/ref/atr/blueprints/post.py:form"><code>@post.form()</code></a> decorator to parse and validate input data:</p>
+<pre><code class="language-python">@post.committer("/keys/add")
+@post.form(shared.keys.AddOpenPGPKeyForm)
+async def add(session: web.Committer, add_openpgp_key_form: shared.keys.AddOpenPGPKeyForm) -&gt; web.WerkzeugResponse:
+    """Add a new public signing key to the user's account."""
+    try:
+        key_text = add_openpgp_key_form.public_key
+        selected_committee_names = add_openpgp_key_form.selected_committees
+
+        # Process the validated form data...
+        async with storage.write() as write:
+            # ...
+
+        await quart.flash("OpenPGP key added successfully.", "success")
+    except web.FlashError as e:
+        await quart.flash(str(e), "error")
+    except Exception as e:
+        log.exception("Error adding OpenPGP key:")
+        await quart.flash(f"An unexpected error occurred: {e!s}", "error")
+
+    return await session.redirect(get.keys.keys)
+</code></pre>
+<p>The <a href="/ref/atr/form.py:validate"><code>form.validate</code></a> function should only be called manually when the request comes from JavaScript, as in <a href="/ref/atr/post/preview.py:announce_preview"><code>announce_preview</code></a>. It takes the form class, the form data dictionary, and an optional context dictionary. If validation succeeds, it returns an instance of your form class with validated data. If validation fails, it raises a <code>pydantic.ValidationError</code>.</p>
+<p>The error handling uses <a href="/ref/atr/form.py:flash_error_data"><code>form.flash_error_data</code></a> to prepare error information for display, and <a href="/ref/atr/form.py:flash_error_summary"><code>form.flash_error_summary</code></a> to create a user-friendly summary of all validation errors.</p>
+<h3 id="rendering-forms">Rendering Forms</h3>
+<p>The <code>form</code> module provides the <a href="/ref/atr/form.py:render"><code>form.render</code></a> function (or <a href="/ref/atr/form.py:render_block"><code>form.render_block</code></a> for use with <a href="/ref/atr/htm.py:Block"><code>htm.Block</code></a>) that generates Bootstrap-styled HTML. This function creates a two-column layout with labels on the left and inputs on the right:</p>
+<pre><code class="language-python">form.render_block(
+    page,
+    model_cls=shared.keys.AddOpenPGPKeyForm,
+    action=util.as_url(post.keys.add),
+    submit_label="Add OpenPGP key",
+    cancel_url=util.as_url(keys),
+    defaults={
+        "selected_committees": committee_choices,
+    },
+)
+</code></pre>
+<p>The <code>defaults</code> parameter accepts a dictionary to populate initial field values. For checkbox/radio groups and select dropdowns, you can pass a list of <code>(value, label)</code> tuples to dynamically provide choices. The <code>render</code> function returns htpy elements which you can embed in templates or return directly from route handlers.</p>
+<p>Key rendering parameters:</p>
+<ul>
+<li><code>action</code> - form submission URL (defaults to current path)</li>
+<li><code>submit_label</code> - text for the submit button</li>
+<li><code>cancel_url</code> - if provided, adds a cancel link next to submit</li>
+<li><code>defaults</code> - dictionary of initial values or dynamic choices</li>
+<li><code>textarea_rows</code> - number of rows for textarea widgets (default: 12)</li>
+<li><code>wider_widgets</code> - use wider input column (default: False)</li>
+<li><code>border</code> - add borders between fields (default: False)</li>
+</ul>
 <h2 id="programmatic-html">Programmatic HTML</h2>
 <p>Sometimes you need to generate HTML in Python rather than in a template. For this we use <a href="https://htpy.dev/">htpy</a>, which provides a Python API for building HTML elements. You import <code>htpy</code> and then use it like this:</p>
 <pre><code class="language-python">import htpy
@@ -76,37 +161,58 @@ return div.collect()
 <p>The block class is useful when you are building HTML in a loop or when you have conditional elements. Instead of managing a list of elements manually, you can let the block class do it for you: append elements as you go, and at the end call <code>collect</code> to get the final result. This is cleaner than concatenating strings or maintaining lists yourself.</p>
 <p>The block class also adds a <code>data-src</code> attribute to elements, which records which function created the element. If you see an element in the browser inspector with <code>data-src="atr.get.keys:keys"</code>, you know that it came from the <code>keys</code> function in <code>get/keys.py</code>. The source is extracted automatically using <a href="/ref/atr/log.py:caller_name"><code>log.caller_name</code></a>.</p>
 <h2 id="how-a-route-renders-ui">How a route renders UI</h2>
-<p>A typical route that renders UI first authenticates the user, loads data from the database, creates and validates a form if necessary, and renders a template with the data and form. Here is a simplified example from <a href="/ref/atr/get/keys.py:add"><code>get/keys.py</code></a>:</p>
-<pre><code class="language-python">@route.committer("/keys/add", methods=["GET", "POST"])
-async def add(session: route.CommitterSession) -&gt; str:
+<p>A typical route that renders UI first authenticates the user, loads data from the database, builds HTML using htpy, and renders it using a template. GET and POST requests are handled by separate routes, with form validation automatically handled by the <a href="/ref/atr/blueprints/post.py:form"><code>@post.form()</code></a> decorator. Here is a simplified example from <a href="/ref/atr/get/keys.py:add"><code>get/keys.py</code></a>:</p>
+<pre><code class="language-python">@get.committer("/keys/add")
+async def add(session: web.Committer) -&gt; str:
+    """Add a new public signing key to the user's account."""
     async with storage.write() as write:
         participant_of_committees = await write.participant_of_committees()
 
-    committee_choices: forms.Choices = [
-        (c.name, c.display_name or c.name)
-        for c in participant_of_committees
+    committee_choices = [(c.name, c.display_name or c.name) for c in participant_of_committees]
+
+    page = htm.Block()
+    page.p[htm.a(".atr-back-link", href=util.as_url(keys))["← Back to Manage keys"]]
+    page.div(".my-4")[
+        htm.h1(".mb-4")["Add your OpenPGP key"],
+        htm.p["Add your public key to use for signing release artifacts."],
     ]
 
-    form = await AddOpenPGPKeyForm.create_form(
-        data=(await quart.request.form) if (quart.request.method == "POST") else None
+    form.render_block(
+        page,
+        model_cls=shared.keys.AddOpenPGPKeyForm,
+        action=util.as_url(post.keys.add),
+        submit_label="Add OpenPGP key",
+        cancel_url=util.as_url(keys),
+        defaults={
+            "selected_committees": committee_choices,
+        },
     )
-    forms.choices(form.selected_committees, committee_choices)
-
-    if await form.validate_on_submit():
-        # Process the form data
-        # ...
-        await quart.flash(f"OpenPGP key added successfully.", "success")
-        form = await AddOpenPGPKeyForm.create_form()
-        forms.choices(form.selected_committees, committee_choices)
-
-    return await template.render(
-        "keys-add.html",
-        asf_id=session.uid,
-        user_committees=participant_of_committees,
-        form=form,
+    ...
+    return await template.blank(
+        "Add your OpenPGP key",
+        content=page.collect(),
+        description="Add your public signing key to your ATR account.",
     )
 </code></pre>
-<p>The route is decorated with <code>@route.committer</code>, which ensures that the route fails before the function is even entered if authentication fails. The function receives a <code>session</code> object, which is an instance of <a href="/ref/atr/web.py:Committer"><code>web.Committer</code></a> with a range of useful properties and methods. The function then loads data, creates a form, checks if the request is a POST, and either processes the form or displays it. After successful processing, it creates a fresh form to clear the data. At the end, it renders a template with all of the variables that the template needs.</p>
-<p>The template receives the form object and renders it by passing it to one of the <code>forms.render_*</code> functions. We previously used Jinja2 macros for this, but are migrating to the new rendering functions in Python (e.g. in <a href="/ref/atr/get/distribution.py"><code>get/distribution.py</code></a> and <a href="/ref/atr/get/ignores.py"><code>get/ignores.py</code></a>). The template also receives other data like <code>asf_id</code> and <code>user_committees</code>, which it uses to display information or make decisions about what to show.</p>
-<p>If you use the programmatic rendering functions from <a href="/ref/atr/forms.py"><code>forms</code></a>, you can skip the template entirely. These functions return htpy elements, which you can combine with other htpy elements and return directly from the route, which is often useful for admin routes, for example. You can also use <a href="/ref/atr/template.py:blank"><code>template.blank</code></a>, which renders a minimal template with just a title and content area. This is useful for simple pages that do not need the full template machinery.</p>
+<p>The route is decorated with <a href="/ref/atr/blueprints/get.py:committer"><code>@get.committer()</code></a>, which handles authentication and provides a <code>session</code> object that is an instance of <a href="/ref/atr/web.py:Committer"><code>web.Committer</code></a> with a range of useful properties and methods.</p>
+<p>The function builds the UI using an <a href="/ref/atr/htm.py:Block"><code>htm.Block</code></a> object, which provides a convenient API for incrementally building HTML. The form is rendered directly into the block using <a href="/ref/atr/form.py:render_block"><code>form.render_block()</code></a>, which generates all the necessary HTML with Bootstrap styling.</p>
+<p>Finally, the route returns the rendered HTML using <a href="/ref/atr/template.py:blank"><code>template.blank()</code></a>, which renders a minimal template with just a title and content area.</p>
+<p>Form submission is handled by a separate POST route:</p>
+<pre><code class="language-python">@post.committer("/keys/add")
+@post.form(shared.keys.AddOpenPGPKeyForm)
+async def add(session: web.Committer, add_openpgp_key_form: shared.keys.AddOpenPGPKeyForm) -&gt; web.WerkzeugResponse:
+    """Add a new public signing key to the user's account."""
+    try:
+        key_text = add_openpgp_key_form.public_key
+        selected_committee_names = add_openpgp_key_form.selected_committees
+
+        # Process the validated form data...
+
+        await quart.flash("OpenPGP key added successfully.", "success")
+    except web.FlashError as e:
+        await quart.flash(str(e), "error")
+
+    return await session.redirect(get.keys.keys)
+</code></pre>
+<p>The <a href="/ref/atr/blueprints/post.py:form"><code>@post.form()</code></a> decorator handles form validation automatically. If validation fails, it flashes error messages and redirects back to the GET route. If validation succeeds, the validated form instance is injected into the route handler as a parameter.</p>
 <p>Bootstrap CSS classes are applied automatically by the form rendering functions. The functions use classes like <code>form-control</code>, <code>form-select</code>, <code>btn-primary</code>, <code>is-invalid</code>, and <code>invalid-feedback</code>. We currently use Bootstrap 5. If you generate HTML manually with htpy, you can apply Bootstrap classes yourself by using the CSS selector syntax like <code>htpy.div(".container")</code> or the class attribute like <code>htpy.div(class_="container")</code>.</p>
